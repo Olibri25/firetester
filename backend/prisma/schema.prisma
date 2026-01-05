@@ -1,0 +1,575 @@
+// AK FISH Database Schema
+// PostgreSQL with PostGIS for geospatial queries
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis]
+}
+
+// ============================================
+// User & Authentication
+// ============================================
+
+model User {
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  passwordHash        String?
+  displayName         String
+  avatarUrl           String?
+  subscriptionTier    SubscriptionTier @default(FREE)
+  subscriptionExpires DateTime?
+  stripeCustomerId    String?
+  firebaseUid         String?   @unique
+
+  // Preferences stored as JSON
+  preferences         Json      @default("{}")
+
+  // Timestamps
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  lastActiveAt        DateTime  @default(now())
+
+  // Relations
+  waypoints           Waypoint[]
+  trips               Trip[]
+  catches             Catch[]
+  alerts              UserAlert[]
+  favoriteLakes       FavoriteLake[]
+  favoriteStations    FavoriteStation[]
+
+  @@map("users")
+}
+
+enum SubscriptionTier {
+  FREE
+  PREMIUM
+  ELITE
+}
+
+// ============================================
+// Fish Counting Stations
+// ============================================
+
+model FishCountStation {
+  id          String      @id @default(uuid())
+  name        String
+  type        StationType
+  river       String
+  region      String
+  latitude    Float
+  longitude   Float
+  species     String[]    // Array of species codes
+  isActive    Boolean     @default(true)
+  dataUrl     String?
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Relations
+  counts      FishCount[]
+  favorites   FavoriteStation[]
+
+  @@map("fish_count_stations")
+}
+
+enum StationType {
+  SONAR
+  WEIR
+  TOWER
+  AERIAL
+}
+
+model FishCount {
+  id              String    @id @default(uuid())
+  stationId       String
+  date            DateTime  @db.Date
+  timestamp       DateTime
+  species         String
+  dailyCount      Int
+  cumulativeCount Int
+  escapementGoal  Int?
+  percentOfGoal   Float?
+
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  station         FishCountStation @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  @@unique([stationId, date, species])
+  @@index([stationId, date])
+  @@index([species])
+  @@map("fish_counts")
+}
+
+model HistoricalFishCount {
+  id              String    @id @default(uuid())
+  stationId       String
+  year            Int
+  species         String
+  totalCount      Int
+  escapementGoal  Int?
+  goalMet         Boolean
+  peakDate        DateTime? @db.Date
+  peakCount       Int?
+
+  @@unique([stationId, year, species])
+  @@map("historical_fish_counts")
+}
+
+// ============================================
+// Emergency Orders & Regulations
+// ============================================
+
+model EmergencyOrder {
+  id              String          @id @default(uuid())
+  externalId      String          @unique
+  type            RegulationType
+  action          String
+  title           String
+  summary         String          @db.Text
+  fullText        String          @db.Text
+  effectiveDate   DateTime
+  expirationDate  DateTime?
+  affectedAreas   String[]
+  affectedSpecies String[]
+  sourceUrl       String
+  publishedAt     DateTime
+  isActive        Boolean         @default(true)
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([isActive])
+  @@index([publishedAt])
+  @@map("emergency_orders")
+}
+
+enum RegulationType {
+  EMERGENCY_ORDER
+  NEWS_RELEASE
+  REGULATION_CHANGE
+}
+
+model Regulation {
+  id                   String    @id @default(uuid())
+  area                 String
+  waterBody            String
+  species              String
+  bagLimit             Int
+  sizeLimitMin         Float?
+  sizeLimitMax         Float?
+  slotLimit            Boolean   @default(false)
+  gearRestrictions     String[]
+  seasonOpen           DateTime  @db.Date
+  seasonClose          DateTime  @db.Date
+  specialConditions    String[]
+  plainEnglishSummary  String    @db.Text
+
+  lastUpdated          DateTime  @updatedAt
+
+  @@index([area])
+  @@index([species])
+  @@map("regulations")
+}
+
+// ============================================
+// Lakes & Water Bodies
+// ============================================
+
+model Lake {
+  id                  String    @id @default(uuid())
+  name                String
+  alternateNames      String[]
+  latitude            Float
+  longitude           Float
+  region              String
+  type                WaterBodyType @default(LAKE)
+  surfaceArea         Float?    // acres
+  maxDepth            Float?    // feet
+  elevation           Float?    // feet
+  accessTypes         String[]
+  accessDescription   String?   @db.Text
+  boatLaunchAvailable Boolean   @default(false)
+  bathymetryAvailable Boolean   @default(false)
+  bathymetryUrl       String?
+  notes               String?   @db.Text
+  lastSurveyDate      DateTime? @db.Date
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  // Relations
+  species             LakeSpecies[]
+  stockingHistory     StockingRecord[]
+  stockingSchedule    StockingSchedule[]
+  favorites           FavoriteLake[]
+
+  @@index([region])
+  @@index([name])
+  @@map("lakes")
+}
+
+enum WaterBodyType {
+  LAKE
+  RIVER
+  STREAM
+  CREEK
+  SLOUGH
+  ESTUARY
+}
+
+model LakeSpecies {
+  id          String    @id @default(uuid())
+  lakeId      String
+  species     String
+  abundance   Abundance @default(COMMON)
+  averageSize Float?    // inches
+  sizeMin     Float?
+  sizeMax     Float?
+  notes       String?
+
+  // Relations
+  lake        Lake      @relation(fields: [lakeId], references: [id], onDelete: Cascade)
+
+  @@unique([lakeId, species])
+  @@map("lake_species")
+}
+
+enum Abundance {
+  RARE
+  COMMON
+  ABUNDANT
+}
+
+model StockingRecord {
+  id            String        @id @default(uuid())
+  lakeId        String
+  date          DateTime      @db.Date
+  species       String
+  quantity      Int
+  sizeCategory  SizeCategory
+  averageLength Float?        // inches
+  source        String?
+
+  createdAt     DateTime      @default(now())
+
+  // Relations
+  lake          Lake          @relation(fields: [lakeId], references: [id], onDelete: Cascade)
+
+  @@index([lakeId, date])
+  @@map("stocking_records")
+}
+
+model StockingSchedule {
+  id              String        @id @default(uuid())
+  lakeId          String
+  plannedDate     DateTime      @db.Date
+  species         String
+  plannedQuantity Int
+  sizeCategory    SizeCategory
+  status          StockingStatus @default(SCHEDULED)
+  year            Int
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  lake            Lake          @relation(fields: [lakeId], references: [id], onDelete: Cascade)
+
+  @@index([year])
+  @@index([status])
+  @@map("stocking_schedules")
+}
+
+enum SizeCategory {
+  FRY
+  FINGERLING
+  SUBCATCHABLE
+  CATCHABLE
+}
+
+enum StockingStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+// ============================================
+// Fishing Reports
+// ============================================
+
+model FishingReport {
+  id            String    @id @default(uuid())
+  externalId    String    @unique
+  region        String
+  area          String
+  reportDate    DateTime  @db.Date
+  publishedAt   DateTime
+  author        String?
+  content       String    @db.Text
+  conditions    Json      // FishingConditions as JSON
+  speciesReports Json     // SpeciesReport[] as JSON
+  recommendations String[]
+  sourceUrl     String
+
+  createdAt     DateTime  @default(now())
+
+  @@index([region])
+  @@index([reportDate])
+  @@map("fishing_reports")
+}
+
+// ============================================
+// Run Timing
+// ============================================
+
+model RunTimingData {
+  id            String    @id @default(uuid())
+  location      String
+  river         String
+  species       String
+  year          Int
+  firstFish     DateTime? @db.Date
+  earlyRunStart DateTime? @db.Date
+  earlyRunPeak  DateTime? @db.Date
+  earlyRunEnd   DateTime? @db.Date
+  lateRunStart  DateTime? @db.Date
+  lateRunPeak   DateTime? @db.Date
+  lateRunEnd    DateTime? @db.Date
+  lastFish      DateTime? @db.Date
+  totalEscapement Int?
+  notes         String?
+
+  @@unique([location, species, year])
+  @@map("run_timing_data")
+}
+
+model RunPrediction {
+  id                  String    @id @default(uuid())
+  location            String
+  species             String
+  predictedPeakDate   DateTime  @db.Date
+  confidenceLevel     Int       // 0-100
+  predictedTotalRun   Int
+  predictedStrength   String
+  factors             Json      // PredictionFactor[] as JSON
+  generatedAt         DateTime
+  validUntil          DateTime
+
+  @@index([location, species])
+  @@map("run_predictions")
+}
+
+// ============================================
+// User Data: Waypoints
+// ============================================
+
+model Waypoint {
+  id          String        @id @default(uuid())
+  userId      String
+  name        String
+  type        WaypointType
+  latitude    Float
+  longitude   Float
+  description String?
+  notes       String?       @db.Text
+  photos      String[]
+  isPrivate   Boolean       @default(true)
+  tags        String[]
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("waypoints")
+}
+
+enum WaypointType {
+  HOT_SPOT
+  CAMP_SITE
+  BOAT_LAUNCH
+  HAZARD
+  FISH_ON
+  PARKING
+  TRAILHEAD
+  CUSTOM
+}
+
+// ============================================
+// User Data: Trips
+// ============================================
+
+model Trip {
+  id          String    @id @default(uuid())
+  userId      String
+  name        String
+  startTime   DateTime
+  endTime     DateTime?
+  track       Json      // GeoPoint[] as JSON
+  distance    Float     // miles
+  duration    Int       // minutes
+  conditions  Json?     // TripConditions as JSON
+  notes       String?   @db.Text
+  photos      String[]
+  isPublic    Boolean   @default(false)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catches     Catch[]
+
+  @@index([userId])
+  @@index([startTime])
+  @@map("trips")
+}
+
+// ============================================
+// User Data: Catches
+// ============================================
+
+model Catch {
+  id          String    @id @default(uuid())
+  userId      String
+  tripId      String?
+  species     String
+  latitude    Float
+  longitude   Float
+  timestamp   DateTime
+  length      Float?    // inches
+  weight      Float?    // pounds
+  kept        Boolean   @default(false)
+  lure        String?
+  technique   String?
+  depth       Float?    // feet
+  waterTemp   Float?
+  notes       String?
+  photos      String[]
+  isPublic    Boolean   @default(false)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trip        Trip?     @relation(fields: [tripId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([species])
+  @@index([timestamp])
+  @@map("catches")
+}
+
+// ============================================
+// User Alerts & Favorites
+// ============================================
+
+model UserAlert {
+  id          String    @id @default(uuid())
+  userId      String
+  type        AlertType
+  targetId    String    // ID of the entity being tracked
+  targetName  String
+  isEnabled   Boolean   @default(true)
+  threshold   Json?     // Alert-specific threshold config
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, targetId])
+  @@map("user_alerts")
+}
+
+enum AlertType {
+  FISH_COUNT
+  STOCKING
+  EMERGENCY_ORDER
+  RUN_TIMING
+}
+
+model FavoriteLake {
+  id        String    @id @default(uuid())
+  userId    String
+  lakeId    String
+  createdAt DateTime  @default(now())
+
+  // Relations
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lake      Lake      @relation(fields: [lakeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lakeId])
+  @@map("favorite_lakes")
+}
+
+model FavoriteStation {
+  id        String    @id @default(uuid())
+  userId    String
+  stationId String
+  createdAt DateTime  @default(now())
+
+  // Relations
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  station   FishCountStation @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stationId])
+  @@map("favorite_stations")
+}
+
+// ============================================
+// Push Notification Tokens
+// ============================================
+
+model PushToken {
+  id        String    @id @default(uuid())
+  userId    String
+  token     String    @unique
+  platform  Platform
+  isActive  Boolean   @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
+enum Platform {
+  IOS
+  ANDROID
+}
+
+// ============================================
+// Cache & Job Tracking
+// ============================================
+
+model DataSyncLog {
+  id          String    @id @default(uuid())
+  source      String
+  status      SyncStatus
+  recordsProcessed Int   @default(0)
+  errorMessage String?
+  startedAt   DateTime
+  completedAt DateTime?
+
+  @@index([source, startedAt])
+  @@map("data_sync_logs")
+}
+
+enum SyncStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
